@@ -25,6 +25,7 @@
 #ifdef OFX_IO_USING_OCIO
 
 #include <cstdio> // fopen...
+#include <fstream>
 
 #include "ofxsProcessing.H"
 #include "ofxsThreadSuite.h"
@@ -185,6 +186,9 @@ private:
 #endif
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr getCPUProcessor();
+#endif
 
     void refreshKnobEnabledState(bool readFromFile);
 
@@ -347,6 +351,9 @@ private:
 
     GenericOCIO::Mutex _procMutex;
     OCIO::ConstProcessorRcPtr _proc;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr _cpuProc;
+#endif
     double _procSlope_r;
     double _procSlope_g;
     double _procSlope_b;
@@ -612,7 +619,11 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
         }
     }
 
+#if OCIO_VERSION_MAJOR > 1
+    double sop[9];
+#else
     float sop[9];
+#endif
     double slope_r, slope_g, slope_b;
     _slope->getValueAtTime(time, slope_r, slope_g, slope_b);
     double offset_r, offset_g, offset_b;
@@ -640,6 +651,17 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
             OCIO::ConstConfigRcPtr config = OCIO::GetCurrentConfig();
             assert(config);
             OCIO::CDLTransformRcPtr cc = OCIO::CDLTransform::Create();
+#if OCIO_VERSION_MAJOR > 1
+            sop[0] = slope_r;
+            sop[1] = slope_g;
+            sop[2] = slope_b;
+            sop[3] = offset_r;
+            sop[4] = offset_g;
+            sop[5] = offset_b;
+            sop[6] = power_r;
+            sop[7] = power_g;
+            sop[8] = power_b;
+#else
             sop[0] = (float)slope_r;
             sop[1] = (float)slope_g;
             sop[2] = (float)slope_b;
@@ -649,6 +671,7 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
             sop[6] = (float)power_r;
             sop[7] = (float)power_g;
             sop[8] = (float)power_b;
+#endif
             cc->setSOP(sop);
             cc->setSat( (float)saturation );
 
@@ -679,6 +702,25 @@ OCIOCDLTransformPlugin::getProcessor(OfxTime time)
     return _proc;
 } // getProecssor
 
+#if OCIO_VERSION_MAJOR > 1
+OCIO::ConstCPUProcessorRcPtr
+OCIOCDLTransformPlugin::getCPUProcessor()
+{
+    try {
+        GenericOCIO::AutoMutex guard(_procMutex);
+        if ( !_cpuProc ) {
+            AutoSetAndRestoreThreadLocale locale;
+            _cpuProc = _proc->getDefaultCPUProcessor();
+        }
+    } catch (const OCIO::Exception &e) {
+        setPersistentMessage( Message::eMessageError, "", e.what() );
+        throwSuiteStatusException(kOfxStatFailed);
+    }
+
+    return _cpuProc;
+} // getCPUProcessor
+#endif
+
 void
 OCIOCDLTransformPlugin::apply(double time,
                               const OfxRectI& renderWindow,
@@ -703,6 +745,9 @@ OCIOCDLTransformPlugin::apply(double time,
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
 
     processor.setProcessor( getProcessor(time) );
+#if OCIO_VERSION_MAJOR > 1
+    processor.setCPUProcessor( getCPUProcessor() );
+#endif
 
     // set the render window
     processor.setRenderWindow(renderWindow, renderScale);
@@ -963,10 +1008,28 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
                                    , int& /*view*/, std::string& /*plane*/)
 {
     const double time = args.time;
+#if OCIO_VERSION_MAJOR > 1
+    double sop[9];
+#else
     float sop[9];
+#endif
     double saturation;
     double r, g, b;
 
+#if OCIO_VERSION_MAJOR > 1
+    _slope->getValueAtTime(time, r, g, b);
+    sop[0] = r;
+    sop[1] = g;
+    sop[2] = b;
+    _offset->getValueAtTime(time, r, g, b);
+    sop[3] = r;
+    sop[4] = g;
+    sop[5] = b;
+    _power->getValueAtTime(time, r, g, b);
+    sop[6] = r;
+    sop[7] = g;
+    sop[8] = b;
+#else
     _slope->getValueAtTime(time, r, g, b);
     sop[0] = (float)r;
     sop[1] = (float)g;
@@ -979,6 +1042,7 @@ OCIOCDLTransformPlugin::isIdentity(const IsIdentityArguments &args,
     sop[6] = (float)r;
     sop[7] = (float)g;
     sop[8] = (float)b;
+#endif
     _saturation->getValueAtTime(time, saturation);
     int _directioni;
     _direction->getValueAtTime(time, _directioni);
@@ -1090,7 +1154,11 @@ OCIOCDLTransformPlugin::loadCDLFromFile()
     }
 
 
+#if OCIO_VERSION_MAJOR > 1
+    double sop[9];
+#else
     float sop[9];
+#endif
     transform->getSOP(sop);
 
     _slope->deleteAllKeys();
@@ -1146,6 +1214,15 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
         if ( exportName.empty() ) {
             sendMessage(Message::eMessageError, "", "Export file name is empty, please enter a valid non-existing file name.");
         } else {
+#if OCIO_VERSION_MAJOR > 1
+            std::ofstream file = std::ofstream(exportName, std::ofstream::in);
+            if (file.is_open()) {
+                file.close();
+                sendMessage(Message::eMessageError, "", string("File ") + exportName + " already exists, please select another filename");
+            } else {
+                file = std::ofstream(exportName, std::ofstream::out);
+                if (!file.is_open()) {
+#else
             std::FILE *file = std::fopen(exportName.c_str(), "r");
             if (file) {
                 std::fclose(file);
@@ -1153,15 +1230,34 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
             } else {
                 file = std::fopen(exportName.c_str(), "w");
                 if (!file) {
+#endif
                     sendMessage(Message::eMessageError, "", string("File ") + exportName + " cannot be written");
                     throwSuiteStatusException(kOfxStatFailed);
 
                     return;
                 }
                 const double time = args.time;
+#if OCIO_VERSION_MAJOR > 1
+                double sop[9];
+#else
                 float sop[9];
+#endif
                 double saturation;
                 double r, g, b;
+#if OCIO_VERSION_MAJOR > 1
+                _slope->getValueAtTime(time, r, g, b);
+                sop[0] = r;
+                sop[1] = g;
+                sop[2] = b;
+                _offset->getValueAtTime(time, r, g, b);
+                sop[3] = r;
+                sop[4] = g;
+                sop[5] = b;
+                _power->getValueAtTime(time, r, g, b);
+                sop[6] = r;
+                sop[7] = g;
+                sop[8] = b;
+#else
                 _slope->getValueAtTime(time, r, g, b);
                 sop[0] = (float)r;
                 sop[1] = (float)g;
@@ -1174,6 +1270,7 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                 sop[6] = (float)r;
                 sop[7] = (float)g;
                 sop[8] = (float)b;
+#endif
                 _saturation->getValueAtTime(time, saturation);
                 int _directioni;
                 _direction->getValueAtTime(time, _directioni);
@@ -1194,15 +1291,29 @@ OCIOCDLTransformPlugin::changedParam(const InstanceChangedArgs &args,
                         cc->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
                     }
 
+#if OCIO_VERSION_MAJOR > 1
+                    OCIO::GroupTransformRcPtr group = OCIO::GroupTransform::Create();
+                    group->appendTransform(cc);
+                    group->write(config, "ColorDecisionList", file);
+#else
                     std::fputs(cc->getXML(), file);
+#endif
                 } catch (const std::exception &e) {
                     setPersistentMessage( Message::eMessageError, "", e.what() );
+#if OCIO_VERSION_MAJOR > 1
+                    file.close();
+#else
                     std::fclose(file);
+#endif
                     throwSuiteStatusException(kOfxStatFailed);
 
                     return;
                 }
+#if OCIO_VERSION_MAJOR > 1
+                file.close();
+#else
                 std::fclose(file);
+#endif
             }
         }
 

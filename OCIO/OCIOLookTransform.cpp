@@ -173,6 +173,9 @@ private:
 #endif
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time, bool singleLook, const string& lookCombination);
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr getCPUProcessor();
+#endif
 
     void copyPixelData(bool unpremult,
                        bool premult,
@@ -327,6 +330,9 @@ private:
 
     GenericOCIO::Mutex _procMutex;
     OCIO::ConstProcessorRcPtr _proc;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr _cpuProc;
+#endif
     string _procLook;
     string _procInputSpace;
     string _procOutputSpace;
@@ -587,7 +593,7 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
              ( _procInputSpace != inputSpace) ||
              ( _procOutputSpace != outputSpace) ||
              ( _procDirection != directioni) ) {
-            OCIO::TransformDirection direction = OCIO::TRANSFORM_DIR_UNKNOWN;
+            OCIO::TransformDirection direction = OCIO::TRANSFORM_DIR_FORWARD;
             OCIO::LookTransformRcPtr transform = OCIO::LookTransform::Create();
             transform->setLooks( look.c_str() );
 
@@ -616,6 +622,25 @@ OCIOLookTransformPlugin::getProcessor(OfxTime time,
         return _proc;
     }
 } // getProcessor
+
+#if OCIO_VERSION_MAJOR > 1
+OCIO::ConstCPUProcessorRcPtr
+OCIOLookTransformPlugin::getCPUProcessor()
+{
+    try {
+        GenericOCIO::AutoMutex guard(_procMutex);
+        if ( !_cpuProc ) {
+            AutoSetAndRestoreThreadLocale locale;
+            _cpuProc = _proc->getDefaultCPUProcessor();
+        }
+    } catch (const OCIO::Exception &e) {
+        setPersistentMessage( Message::eMessageError, "", e.what() );
+        throwSuiteStatusException(kOfxStatFailed);
+    }
+
+    return _cpuProc;
+} // getCPUProcessor
+#endif
 
 void
 OCIOLookTransformPlugin::apply(double time,
@@ -646,6 +671,9 @@ OCIOLookTransformPlugin::apply(double time,
     }
 
     processor.setProcessor( getProcessor(time, singleLook, lookCombination) );
+#if OCIO_VERSION_MAJOR > 1
+    processor.setCPUProcessor( getCPUProcessor() );
+#endif
 
     // set the images
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);

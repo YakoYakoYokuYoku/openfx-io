@@ -761,6 +761,9 @@ GenericOCIO::setValues(const OCIO::ConstContextRcPtr &context,
     AutoMutex guard(_procMutex);
 
     if ( !_proc ||
+#if OCIO_VERSION_MAJOR > 1
+         !_cpuProc ||
+#endif
          ( context != _procContext) ||
          ( inputSpace != _procInputSpace) ||
          ( outputSpace != _procOutputSpace) ) {
@@ -768,6 +771,9 @@ GenericOCIO::setValues(const OCIO::ConstContextRcPtr &context,
         _procInputSpace = inputSpace;
         _procOutputSpace = outputSpace;
         _proc = _config->getProcessor( context, inputSpace.c_str(), outputSpace.c_str() );
+#if OCIO_VERSION_MAJOR > 1
+        _cpuProc = _proc->getDefaultCPUProcessor();
+#endif
     }
 }
 
@@ -807,8 +813,15 @@ OCIOProcessor::multiThreadProcessImages(const OfxRectI& renderWindow, const OfxP
     try {
         AutoSetAndRestoreThreadLocale locale;
         if (_proc) {
+#if OCIO_VERSION_MAJOR > 1
+            OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, OCIO::BIT_DEPTH_F32, sizeof(float), pixelBytes, _dstRowBytes);
+            if (_cpuProc) {
+                _cpuProc->apply(img);
+            }
+#else
             OCIO::PackedImageDesc img(pix, renderWindow.x2 - renderWindow.x1, renderWindow.y2 - renderWindow.y1, numChannels, sizeof(float), pixelBytes, _dstRowBytes);
             _proc->apply(img);
+#endif
         }
     } catch (OCIO::Exception &e) {
         _instance->setPersistentMessage( Message::eMessageError, "", string("OpenColorIO error: ") + e.what() );
@@ -882,6 +895,9 @@ GenericOCIO::apply(double time,
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
 
     processor.setProcessor(proc);
+#if OCIO_VERSION_MAJOR > 1
+    processor.setCPUProcessor(proc->getDefaultCPUProcessor());
+#endif
 
     // set the render window
     processor.setRenderWindow(renderWindow, renderScale);

@@ -212,6 +212,9 @@ private:
     void apply(double time, const OfxRectI& renderWindow, const OfxPointD& renderScale, float *pixelData, const OfxRectI& bounds, PixelComponentEnum pixelComponents, int pixelComponentCount, int rowBytes);
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr getCPUProcessor();
+#endif
 
     void copyPixelData(bool unpremult,
                        bool premult,
@@ -361,6 +364,9 @@ private:
 
     GenericOCIO::Mutex _procMutex;
     OCIO::ConstProcessorRcPtr _proc;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr _cpuProc;
+#endif
     string _procInputSpace;
     ChannelSelectorEnum _procChannel;
     string _procDisplay;
@@ -660,15 +666,40 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
              ( _procView != view) ||
              ( _procGain != gain) ||
              ( _procGamma != gamma) ) {
+#if OCIO_VERSION_MAJOR > 1
+            OCIO::DisplayViewTransformRcPtr transform = OCIO::DisplayViewTransform::Create();
+            transform->setSrc( inputSpace.c_str() );
+#else
             OCIO::DisplayTransformRcPtr transform = OCIO::DisplayTransform::Create();
             transform->setInputColorSpaceName( inputSpace.c_str() );
+#endif
 
             transform->setDisplay( display.c_str() );
 
             transform->setView( view.c_str() );
 
+#if OCIO_VERSION_MAJOR > 1
+            std::string look = config->getDisplayViewLooks( display.c_str(), view.c_str() );
+            OCIO::LegacyViewingPipelineRcPtr vp = OCIO::LegacyViewingPipeline::Create();
+            vp->setDisplayViewTransform(transform);
+            vp->setLooksOverrideEnabled(true);
+            vp->setLooksOverride(look.c_str());
+#endif
+
             // Specify an (optional) linear color correction
             {
+#if OCIO_VERSION_MAJOR > 1
+                double m44[16];
+                double offset4[4];
+                const double slope4d[] = { gain, gain, gain, gain };
+                OCIO::MatrixTransform::Scale(m44, offset4, slope4d);
+
+                OCIO::MatrixTransformRcPtr mtx =  OCIO::MatrixTransform::Create();
+                mtx->setMatrix(m44);
+                mtx->setOffset(offset4);
+
+                vp->setLinearCC(mtx);
+#else
                 float m44[16];
                 float offset4[4];
                 const float slope4f[] = { (float)gain, (float)gain, (float)gain, (float)gain };
@@ -678,15 +709,24 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                 mtx->setValue(m44, offset4);
 
                 transform->setLinearCC(mtx);
+#endif
             }
 
             // Specify an (optional) post-display transform.
             {
+#if OCIO_VERSION_MAJOR > 1
+                double exponent = 1.0 / (std::max)(1e-6, gamma);
+                const double exponent4d[] = { exponent, exponent, exponent, exponent };
+                OCIO::ExponentTransformRcPtr cc = OCIO::ExponentTransform::Create();
+                cc->setValue(exponent4d);
+                vp->setDisplayCC(cc);
+#else
                 float exponent = 1.0f / (std::max)(1e-6f, (float)gamma);
                 const float exponent4f[] = { exponent, exponent, exponent, exponent };
                 OCIO::ExponentTransformRcPtr cc =  OCIO::ExponentTransform::Create();
                 cc->setValue(exponent4f);
                 transform->setDisplayCC(cc);
+#endif
             }
 
             // Add Channel swizzling
@@ -727,6 +767,17 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                     break;
                 }
 
+#if OCIO_VERSION_MAJOR > 1
+                double lumacoef[3];
+                config->getDefaultLumaCoefs(lumacoef);
+                double m44[16];
+                double offset[4];
+                OCIO::MatrixTransform::View(m44, offset, channelHot, lumacoef);
+                OCIO::MatrixTransformRcPtr swizzle = OCIO::MatrixTransform::Create();
+                swizzle->setMatrix(m44);
+                swizzle->setOffset(offset);
+                vp->setChannelView(swizzle);
+#else
                 float lumacoef[3];
                 config->getDefaultLumaCoefs(lumacoef);
                 float m44[16];
@@ -735,10 +786,15 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
                 OCIO::MatrixTransformRcPtr swizzle = OCIO::MatrixTransform::Create();
                 swizzle->setValue(m44, offset);
                 transform->setChannelView(swizzle);
+#endif
             }
 
             OCIO::ConstContextRcPtr context = _ocio->getLocalContext(time);
+#if OCIO_VERSION_MAJOR > 1
+            _proc = vp->getProcessor(config, context);
+#else
             _proc = config->getProcessor(context, transform, OCIO::TRANSFORM_DIR_FORWARD);
+#endif
             _procInputSpace = inputSpace;
             _procChannel = channel;
             _procDisplay = display;
@@ -753,6 +809,25 @@ OCIODisplayPlugin::getProcessor(OfxTime time)
 
     return _proc;
 } // OCIODisplayPlugin::getProcessor
+
+#if OCIO_VERSION_MAJOR > 1
+OCIO::ConstCPUProcessorRcPtr
+OCIODisplayPlugin::getCPUProcessor()
+{
+    try {
+        GenericOCIO::AutoMutex guard(_procMutex);
+        if ( !_cpuProc ) {
+            AutoSetAndRestoreThreadLocale locale;
+            _cpuProc = _proc->getDefaultCPUProcessor();
+        }
+    } catch (const OCIO::Exception &e) {
+        setPersistentMessage( Message::eMessageError, "", e.what() );
+        throwSuiteStatusException(kOfxStatFailed);
+    }
+
+    return _cpuProc;
+} // getCPUProcessor
+#endif
 
 void
 OCIODisplayPlugin::apply(double time,
@@ -778,6 +853,9 @@ OCIODisplayPlugin::apply(double time,
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
 
     processor.setProcessor( getProcessor(time) );
+#if OCIO_VERSION_MAJOR > 1
+    processor.setCPUProcessor( getCPUProcessor() );
+#endif
 
     // set the render window
     processor.setRenderWindow(renderWindow, renderScale);

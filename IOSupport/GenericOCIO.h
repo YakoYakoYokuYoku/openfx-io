@@ -242,6 +242,9 @@ private:
     std::string _procInputSpace;
     std::string _procOutputSpace;
     //OCIO_NAMESPACE::ConstTransformRcPtr _procTransform;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr _cpuProc;
+#endif
 #endif
 };
 
@@ -254,6 +257,9 @@ public:
     OCIOProcessor(OFX::ImageEffect &instance)
         : OFX::PixelProcessor(instance)
         , _proc()
+#if OCIO_VERSION_MAJOR > 1
+        , _cpuProc()
+#endif
         , _instance(&instance)
     {}
 
@@ -265,8 +271,18 @@ public:
         _proc = proc;
     }
 
+#if OCIO_VERSION_MAJOR > 1
+    void setCPUProcessor(const OCIO_NAMESPACE::ConstCPUProcessorRcPtr& cpuProc)
+    {
+        _cpuProc = cpuProc;
+    }
+#endif
+
 private:
     OCIO_NAMESPACE::ConstProcessorRcPtr _proc;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr _cpuProc;
+#endif
     OFX::ImageEffect* _instance;
 };
 #endif

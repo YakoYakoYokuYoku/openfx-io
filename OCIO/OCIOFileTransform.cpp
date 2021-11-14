@@ -160,6 +160,9 @@ private:
 #endif
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr getCPUProcessor();
+#endif
 
     void updateCCCId();
 
@@ -313,6 +316,9 @@ private:
     BooleanParam* _maskInvert;
 
     GenericOCIO::Mutex _procMutex;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr _cpuProc;
+#endif
     OCIO::ConstProcessorRcPtr _proc;
     string _procFile;
     string _procCCCId;
@@ -598,6 +604,25 @@ OCIOFileTransformPlugin::getProcessor(OfxTime time)
     return _proc;
 } // getProcessor
 
+#if OCIO_VERSION_MAJOR > 1
+OCIO::ConstCPUProcessorRcPtr
+OCIOFileTransformPlugin::getCPUProcessor()
+{
+    try {
+        GenericOCIO::AutoMutex guard(_procMutex);
+        if ( !_cpuProc ) {
+            AutoSetAndRestoreThreadLocale locale;
+            _cpuProc = _proc->getDefaultCPUProcessor();
+        }
+    } catch (const OCIO::Exception &e) {
+        setPersistentMessage( Message::eMessageError, "", e.what() );
+        throwSuiteStatusException(kOfxStatFailed);
+    }
+
+    return _cpuProc;
+} // getCPUProcessor
+#endif
+
 void
 OCIOFileTransformPlugin::apply(double time,
                                const OfxRectI& renderWindow,
@@ -625,6 +650,9 @@ OCIOFileTransformPlugin::apply(double time,
     processor.setRenderWindow(renderWindow, renderScale);
 
     processor.setProcessor( getProcessor(time) );
+#if OCIO_VERSION_MAJOR > 1
+    processor.setCPUProcessor( getCPUProcessor() );
+#endif
 
     // Call the base class process member, this will call the derived templated process code
     processor.process();
@@ -988,9 +1016,15 @@ supportedFormats()
 {
     string s = "Supported formats:\n";
 
+#if OCIO_VERSION_MAJOR > 1
+    for (int i = 0; i < OCIO::FileTransform::GetNumFormats(); ++i) {
+        const char* name = OCIO::FileTransform::GetFormatNameByIndex(i);
+        const char* exten = OCIO::FileTransform::GetFormatExtensionByIndex(i);
+#else
     for (int i = 0; i < OCIO::FileTransform::getNumFormats(); ++i) {
         const char* name = OCIO::FileTransform::getFormatNameByIndex(i);
         const char* exten = OCIO::FileTransform::getFormatExtensionByIndex(i);
+#endif
         s += string("\n.") + exten + " (" + name + ")";
     }
 

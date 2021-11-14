@@ -121,6 +121,9 @@ private:
 #endif
 
     OCIO::ConstProcessorRcPtr getProcessor(OfxTime time);
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr getCPUProcessor();
+#endif
 
     void copyPixelData(bool unpremult,
                        bool premult,
@@ -275,6 +278,9 @@ private:
 
     GenericOCIO::Mutex _procMutex;
     OCIO::ConstProcessorRcPtr _proc;
+#if OCIO_VERSION_MAJOR > 1
+    OCIO::ConstCPUProcessorRcPtr _cpuProc;
+#endif
     int _procMode;
 
 #if defined(OFX_SUPPORTS_OPENGLRENDER)
@@ -546,6 +552,25 @@ OCIOLogConvertPlugin::getProcessor(OfxTime time)
     return _proc;
 } // getProcessor
 
+#if OCIO_VERSION_MAJOR > 1
+OCIO::ConstCPUProcessorRcPtr
+OCIOLogConvertPlugin::getCPUProcessor()
+{
+    try {
+        GenericOCIO::AutoMutex guard(_procMutex);
+        if ( !_cpuProc ) {
+            AutoSetAndRestoreThreadLocale locale;
+            _cpuProc = _proc->getDefaultCPUProcessor();
+        }
+    } catch (const OCIO::Exception &e) {
+        setPersistentMessage( Message::eMessageError, "", e.what() );
+        throwSuiteStatusException(kOfxStatFailed);
+    }
+
+    return _cpuProc;
+} // getCPUProcessor
+#endif
+
 void
 OCIOLogConvertPlugin::apply(double time,
                             const OfxRectI& renderWindow,
@@ -570,6 +595,9 @@ OCIOLogConvertPlugin::apply(double time,
     processor.setDstImg(pixelData, bounds, pixelComponents, pixelComponentCount, eBitDepthFloat, rowBytes);
 
     processor.setProcessor( getProcessor(time) );
+#if OCIO_VERSION_MAJOR > 1
+    processor.setCPUProcessor( getCPUProcessor() );
+#endif
 
     // set the render window
     processor.setRenderWindow(renderWindow, renderScale);
